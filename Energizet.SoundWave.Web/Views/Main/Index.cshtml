@@ -1,0 +1,72 @@
+﻿@model string
+@{
+    ViewData["Title"] = "Home Page";
+}
+
+<canvas id="drawWave" width="1000" height="500"></canvas>
+<canvas id="drawFFT" width="1000" height="500"></canvas>
+
+@section Scripts
+{
+    <script>
+        "use strict";
+        
+        window.addEventListener("load", run);
+        
+        function run() {
+            let ctxWave = document.querySelector('#drawWave').getContext("2d");
+            let ctxFFT = document.querySelector('#drawFFT').getContext("2d");
+        
+        
+            let connection = new signalR.HubConnectionBuilder()
+                .withUrl("/signalrhub")
+                .build();
+        
+            let weight = 1;
+        
+            connection.on("SendWave", (buffer) => {
+                let arr = (buffer);
+                console.log(arr);
+        
+                ctxWave.fillStyle = "white";
+                ctxWave.fillRect(0, 0, 1000, 500);
+                ctxWave.fillStyle = "red";
+        
+                for (const key in arr) {
+                    const value = arr[key];
+        
+                    fillWave(ctxWave, +key, value, weight, 0.000001);
+                }
+            });
+        
+            connection.on("SendFFT", (buffer) => {
+                let arr = (buffer);
+                console.log(arr);
+        
+                ctxFFT.fillStyle = "white";
+                ctxFFT.fillRect(0, 0, 1000, 500);
+        
+                for (const key in arr) {
+                    const value = arr[key];
+        
+                    fillWave(ctxFFT, +key, value, weight, 0.0000001);
+                }
+            });
+        
+            connection.start()
+                .catch(err => console.error(err));
+        }
+        
+        function fillWave(ctx, x, y, weight, height) {
+            if (y > 0) {
+                ctx.fillStyle = "red";
+                ctx.fillRect(x * weight, 250 - y * height, weight, y * height);
+            } else {
+                ctx.fillStyle = "red";
+                ctx.fillRect(x * weight, 250, weight, y * height * -1);
+            }
+            ctx.fillStyle = "black";
+            ctx.fillRect(x * weight - 1, 250 - y * height, weight + 1, 2);
+        }
+    </script>
+}
