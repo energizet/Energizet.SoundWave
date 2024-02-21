@@ -4,6 +4,7 @@ using System.Numerics;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.SignalR;
 using NAudio.Wave;
+using System;
 
 namespace Energizet.SoundWave.Web.Controllers;
 
@@ -41,13 +42,14 @@ public class BackgroundWorker : IHostedService
 		return Task.CompletedTask;
 	}
 
-	private static IEnumerable<long> GetBits8(IEnumerable<byte> buffer, int length)
+
+	public static IEnumerable<long> GetBits8(IEnumerable<byte> buffer, int length)
 	{
 		return buffer.Take(length)
 			.Select(item => ((long)item << 24) - ((long)1 << 31));
 	}
 
-	private static IEnumerable<long> GetBits16(IEnumerable<byte> buffer, int length)
+	public static IEnumerable<long> GetBits16(IEnumerable<byte> buffer, int length)
 	{
 		using var enumerator = buffer.Take(length)
 			.GetEnumerator();
@@ -61,7 +63,7 @@ public class BackgroundWorker : IHostedService
 		}
 	}
 
-	private static IEnumerable<long> GetBits32(IEnumerable<byte> buffer, int length)
+	public static IEnumerable<long> GetBits32(IEnumerable<byte> buffer, int length)
 	{
 		using var enumerator = buffer.Take(length)
 			.GetEnumerator();
@@ -92,7 +94,7 @@ public class BackgroundWorker : IHostedService
 		shift = (shift + 4) % 360;
 	}
 
-	private static List<Complex> Resize(List<Complex> a)
+	public static List<Complex> Resize(List<Complex> a)
 	{
 		var n = 1;
 		while (n < a.Count)
@@ -103,7 +105,7 @@ public class BackgroundWorker : IHostedService
 		return a.Concat(Enumerable.Range(0, n - a.Count).Select(_ => Complex.Zero)).ToList();
 	}
 
-	private static List<int> Normalize(List<Complex> a)
+	public static List<int> Normalize(List<Complex> a)
 	{
 		var result = a.Select(item => (int)Math.Round(item.Real)).ToList();
 
@@ -198,7 +200,7 @@ public class BackgroundWorker : IHostedService
 		}
 	}
 
-	private void FFTInPlaceFast(List<Complex> a)
+	public static void FFTInPlaceFast(List<Complex> a)
 	{
 		var n = a.Count;
 
@@ -269,9 +271,108 @@ public class SignalRHub : Hub
 		await Clients.All.SendAsync("ReceiveMessage", user, message);
 	}
 
+	private async Task StartFile(string path, ISingleClientProxy client,
+		CancellationToken cancellationToken)
+	{
+		//await using var reader = new Mp3FileReader(path);
+		await using var reader = new WaveFileReader(path);
+		await using var rawStream = new RawSourceWaveStream(reader, new WaveFormat(60000, 32, 1));
+		await using var pcmStream = WaveFormatConversionStream.CreatePcmStream(rawStream);
+		using var ms = new MemoryStream();
+		WaveFileWriter.WriteWavFileToStream(ms, pcmStream);
+
+		var buffer = new byte[960 * 4];
+		ms.Seek(0, SeekOrigin.Begin);
+
+		using var waveOut = new WaveOutEvent();
+		reader.Seek(0, SeekOrigin.Begin);
+		waveOut.Init(reader);
+		waveOut.Play();
+
+		while (ms.CanRead)
+		{
+			if (cancellationToken.IsCancellationRequested)
+			{
+				return;
+			}
+
+			var size = await ms.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken);
+			var a = BackgroundWorker.GetBits32(buffer, size)
+				.Select(item => new Complex(item, 0))
+				.ToList();
+			a = BackgroundWorker.Resize(a);
+			await SendWave(BackgroundWorker.Normalize(a), client, cancellationToken);
+			BackgroundWorker.FFTInPlaceFast(a);
+			await SendFFT(BackgroundWorker.Normalize(a), client, cancellationToken);
+			await Task.Delay(16, cancellationToken);
+		}
+
+		/*var writer = new WaveFileWriter(ms, new WaveFormat(60000, 32, 1));
+		var buffer = new byte[1000];
+		var offset = 0;
+		while (reader.CanRead)
+		{
+			var size = await reader.ReadAsync(buffer.AsMemory(0, buffer.Length),
+				cancellationToken);
+			await writer.WriteAsync(buffer.AsMemory(0, buffer.Length), cancellationToken);
+
+			offset += size;
+		}
+
+		WaveFileWriter.WriteWavFileToStream(ms, reader);*/
+
+		/*
+			var waveIn = new WaveInEvent();
+			waveIn.WaveFormat = new WaveFormat(60000, 32, 1);
+			waveIn.BufferMilliseconds = 16;
+			waveIn.DataAvailable += async (sender, args) =>
+			{
+				if (cancellationToken.IsCancellationRequested)
+				{
+					waveIn.StopRecording();
+					return;
+				}
+
+				var a = GetBits32(args.Buffer, args.BytesRecorded)
+					.Select(item => new Complex(item, 0))
+					.ToList();
+				a = Resize(a);
+				await SendWave(Normalize(a), cancellationToken);
+				FFTInPlaceFast(a);
+				await SendFFT(Normalize(a), cancellationToken);
+			};
+			waveIn.StartRecording();
+			*/
+	}
+
+	private async Task SendWave(List<int> buffer, ISingleClientProxy client,
+		CancellationToken cancellationToken)
+	{
+		await Task.WhenAll(client.SendAsync("SendWave", buffer,
+			cancellationToken: cancellationToken));
+	}
+
+	private async Task SendFFT(List<int> buffer, ISingleClientProxy client,
+		CancellationToken cancellationToken)
+	{
+		await Task.WhenAll(client.SendAsync("SendFFT", buffer,
+			cancellationToken: cancellationToken));
+	}
+
 	public override async Task OnConnectedAsync()
 	{
 		_worker.Clients[Context.ConnectionId] = Clients.Caller;
+		//var path = "D:\\C#\\Energizet.SoundWave\\1000.wav";
+		//StartFile(path, Clients.Caller, CancellationToken.None);
+
+		/*var reader = new Mp3FileReader(path);
+		var waveOut = new WaveOutEvent();
+		waveOut.Init(reader);
+		waveOut.Play();
+		/*while (waveOut.PlaybackState == PlaybackState.Playing)
+		{
+			Thread.Sleep(1000);
+		}*/
 		await base.OnConnectedAsync();
 	}
 
